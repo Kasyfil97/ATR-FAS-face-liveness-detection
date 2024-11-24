@@ -13,7 +13,7 @@ class DownConv(nn.Sequential):
                  **kwargs
                  ):
         super().__init__(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_features,
                 out_features,
                 kernel_size=kernel_size,
@@ -27,17 +27,17 @@ class DownConvNormAct(nn.Sequential):
     def __init__(self,
                  in_features,
                  out_features,
-                 norm: nn.Module = nn.BatchNorm2d,
+                 norm: nn.Module = nn.BatchNorm3d,
                  act: nn.Module = nn.ReLU,
                  kernel_size: int = 3,
                  **kwargs
                  ):
         super().__init__(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_features,
                 out_features,
-                kernel_size=kernel_size,
-                stride=2,
+                kernel_size=(kernel_size, 3, 3),
+                stride=(1, 2, 2),
                 padding=kernel_size // 2,
             ),
             norm(out_features),
@@ -50,11 +50,11 @@ class DepthWiseConvNorm(nn.Sequential):
     def __init__(self,
                  in_features,
                  kernel_size,
-                 norm: nn.Module = nn.BatchNorm2d,
+                 norm: nn.Module = nn.BatchNorm3d,
                  **kwargs
                  ):
         super().__init__(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_features,
                 in_features,
                 kernel_size=kernel_size,
@@ -69,12 +69,12 @@ class DepthWiseConvNormAct(nn.Sequential):
     def __init__(self,
                  in_features,
                  kernel_size,
-                 norm: nn.Module = nn.BatchNorm2d,
+                 norm: nn.Module = nn.BatchNorm3d,
                  act: nn.Module = nn.ReLU,
                  **kwargs
                  ):
         super().__init__(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_features,
                 in_features,
                 kernel_size=kernel_size,
@@ -98,12 +98,12 @@ class ConvNorm(nn.Sequential):
         in_features: int,
         out_features: int,
         kernel_size: int,
-        norm: nn.Module = nn.BatchNorm2d,
+        norm: nn.Module = nn.BatchNorm3d,
         **kwargs
     ):
 
         super().__init__(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_features,
                 out_features,
                 kernel_size=kernel_size,
@@ -119,13 +119,13 @@ class ConvNormAct(nn.Sequential):
         in_features: int,
         out_features: int,
         kernel_size: int,
-        norm: nn.Module = nn.BatchNorm2d,
+        norm: nn.Module = nn.BatchNorm3d,
         act: nn.Module = nn.ReLU,
         **kwargs
     ):
 
         super().__init__(
-            nn.Conv2d(
+            nn.Conv3d(
                 in_features,
                 out_features,
                 kernel_size=kernel_size,
@@ -158,18 +158,18 @@ class L2Normalize(nn.Module):
         self.dim = dim
 
     def forward(self, x):
-        # return torch.nn.functional.normalize(x, p=2, dim=self.dim)
         norm = torch.norm(x, 2, dim=self.dim, keepdim=True)
         return torch.div(x, norm + 1e-5)
 
 
 class Mean(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, keepdim=True):
         super(Mean, self).__init__()
         self.dim = dim
+        self.keepdim = keepdim
 
     def forward(self, x):
-        return torch.mean(x, dim=self.dim)
+        return torch.mean(x, dim=self.dim, keepdim=self.keepdim)
 
 
 class ResidualAdd(nn.Module):

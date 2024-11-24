@@ -1,8 +1,9 @@
 from __future__ import print_function, division
 import torch.utils.data
 import torch
+import torch.nn as nn
 from .inverted_residual import InvertedResidual
-from .base_layer import *
+from .base_layer import Conv3X3BnReLU, Conv1X1BnReLU
 
 
 class EasyResUNet(nn.Module):
@@ -13,18 +14,18 @@ class EasyResUNet(nn.Module):
         # 编码器-------------------------------------------------------------
         self.encoder_0 = res_block(64, 32, 1)
 
-        self.max_pool_1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.max_pool_1 = nn.MaxPool3d(kernel_size=(1,2,2), stride=(1,2,2))
         self.encoder_1 = res_block(32, 64, 2)
 
-        self.max_pool_2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.max_pool_2 = nn.MaxPool3d(kernel_size=(1,2,2), stride=(1,2,2))
         self.encoder_2 = res_block(64, 128, 2)
 
         # 解码器---------------------------------------------------------
-        self.up_sample_2 = nn.Upsample(scale_factor=2)
+        self.up_sample_2 = nn.Upsample(scale_factor=(1,2,2))
         self.adapt_2 = Conv1X1BnReLU(128, 64)
         self.decoder_2 = res_block(2 * 64, 32, 1)
 
-        self.up_sample_1 = nn.Upsample(scale_factor=2)
+        self.up_sample_1 = nn.Upsample(scale_factor=(1,2,2))
         self.decoder_1 = res_block(2 * 32, 32, 1)
 
         # 输出适配器

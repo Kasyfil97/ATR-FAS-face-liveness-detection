@@ -1,69 +1,135 @@
 import numpy as np
-
-from .res_u_net import ResUNet
-from .easy_res_u_net import EasyResUNet
-from .inverted_residual import *
+from torch import nn
+from model.res_u_net import ResUNet
+from model.easy_res_u_net import EasyResUNet
+from model.base_layer import DownConvNormAct, ConvNormAct, Reshape, L2Normalize, Mean
 import torch
 
-
-class ATR-FAS(nn.Module):
-    def __init__(self, infer_type=None, frame_num=6, **kwargs):
-        super(MoEA, self).__init__()
-        self.infer_type = infer_type
-        self.frame_num = frame_num
-
+# type gating nerwork
+class TyepGatingNetwork(nn.Module):
+    def __init__(self, number_attacks=3):
+        super(TyepGatingNetwork, self).__init__()
         self.gate = nn.Sequential(
-            DownConvNormAct(3, 32),
-            DownConvNormAct(32, 64),
-            DownConvNormAct(64, 64, kernel_size=7),  # [32, 32, 64]
-            torch.nn.AdaptiveAvgPool2d((1, 1)),  # [1, 1, 64]
-            Reshape(64),
-            nn.Linear(64, 32),
-            nn.Linear(32, 3),
-
+            DownConvNormAct(3, 32), # [1, 3, 6, 256, 256] -> [1, 32, 6, 128, 128]
+            DownConvNormAct(32, 64), # [1, 32, 6, 128, 128] -> [1, 64, 6, 64, 64]
+            DownConvNormAct(64, 64, kernel_size=7),  # [1, 64, 6, 64, 64] -> [1, 64, 6, 32, 32]
+            torch.nn.AdaptiveAvgPool3d((1, 1, 1)),  # [1, 64, 6, 32, 32] -> [1, 64, 6, 1, 1]
+            Reshape(64), # [1, 64, 1, 1, 1] -> [1, 64]
+            nn.Linear(64, 32), # [1, 32]
+            nn.Linear(32, number_attacks), # [1, 3]
         )
+    def forward(self, x):
+        assert x.dim() == 5, "input tensor must be 5D, but got {}D".format(x.dim())
+        assert x.shape[2]==6, "input tensor must have 6 frames, but got {}".format(x)
+        assert x.shape[1]==3, "input tensor must have 3 channels, but got {}".format(x) 
 
-        # [3, 256, 256]->[64, 64, 64]
+        x = self.gate(x)
+        x = torch.softmax(x, dim=-1)
+        return x
+    
+# MEMM
+class MEMM(nn.Module):
+    def __init__(self, num_batches: int, num_frames: int=6):
+        super(MEMM, self).__init__()
         self.head_stem = nn.Sequential(
-            DownConvNormAct(3, 32),
-            DownConvNormAct(32, 64),
+            DownConvNormAct(3, 32), # [6, 32, 128, 128]
+            DownConvNormAct(32, 64), # [6, 64, 64, 64]
         )
+        self.positional_embedding = torch.nn.Parameter(torch.randn(num_batches, 64, num_frames, 64, 64)) # [B, 64, N, 64, 64]
+        self.depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, 1, -1]).astype(np.float32)
+        self.resunet = ResUNet()
 
-        self.pos_embedding = torch.nn.Parameter(torch.randn(1, 64, 64, 64))
+    @staticmethod
+    def pixel_wise_softmax(x):
+        """
+        Applies a pixel-wise softmax operation to the input tensor.
 
-        # 注意力值
-        # 1、用来融合（预测出的）多帧深度图成一帧，然后再分类
+        The function moves the channel dimension to the last position, computes the 
+        exponential of each element subtracted by the maximum value in its channel 
+        (for numerical stability), and normalizes by the sum of exponentials along 
+        the channel dimension.
+        """
+        # Move the channel dimension to the last
+        x = x.permute(0, 2, 3, 4, 1)
+        channel_max, _ = torch.max(x, dim=4, keepdim=True)
+        exponential_map = torch.exp(x - channel_max)
+        normalize = torch.sum(exponential_map, dim=4, keepdims=True)
+        return exponential_map / (normalize + 1e-5)
+    
+    def forward(self, x: torch.tensor, type_gating: torch.tensor):
+        assert x.dim() == 5, "input tensor must be 5D, but got {}D".format(x.dim())
+        assert x.shape[2]==6, "input tensor must have 6 frames, but got {}".format(x)
+        assert x.shape[1]==3, "input tensor must have 3 channels, but got {}".format(x)
+
+        # input embedding
+        x = self.head_stem(x) # [B, 3, N, 256, 256] -> [B, 64, N, 64, 64]
+        x = x + self.positional_embedding
+        # number of types
+        M = type_gating.shape[1]
+
+        # result from 
+        x_bar = [self.resunet(x) for _ in range(M)]
+        type_gating = torch.reshape(type_gating, [-1, 3, 1, 1, 1]) # [B, M] -> [M, B, 1, 1, 1]
+        
+        x_prime = sum(x_bar[i] * type_gating[:, i:i+1, :, :, :] for i in range(M))
+        depth_softmax = MEMM.pixel_wise_softmax(x_prime)
+
+        depth_map_cof = torch.from_numpy(self.depth_map_cor)
+        depth_map = torch.sum(depth_softmax * depth_map_cof, axis=-1)
+        
+        return depth_map
+    
+# attention gating network
+class AttentionGatingNetwork(nn.Module):
+    def __init__(self):
+        super(AttentionGatingNetwork, self).__init__()
         self.attention_stem = nn.Sequential(
             DownConvNormAct(3, 16),
             DownConvNormAct(16, 32),
         )
-        self.easy_u_net_attention = EasyResUNet()
+        self.easyunet = EasyResUNet()
+        self.depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, 1, -1]).astype(np.float32)
 
-        # 三个任务
-        self.u_net_print = ResUNet()
-        self.u_net_screen = ResUNet()
-        self.u_net_3d = ResUNet()
+    @staticmethod
+    def pixel_wise_softmax(x):
+        """
+        Applies a pixel-wise softmax operation to the input tensor.
 
-        depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, -1]).astype(np.float32)
-        self.depth_map_cof = torch.from_numpy(depth_map_cor)
+        The function moves the channel dimension to the last position, computes the 
+        exponential of each element subtracted by the maximum value in its channel 
+        (for numerical stability), and normalizes by the sum of exponentials along 
+        the channel dimension.
+        """
+        # Move the channel dimension to the last
+        x = x.permute(0, 2, 3, 4, 1)
+        channel_max, _ = torch.max(x, dim=3, keepdim=True)
+        exponential_map = torch.exp(x - channel_max)
+        normalize = torch.sum(exponential_map, dim=3, keepdims=True)
+        return exponential_map / (normalize + 1e-5)
 
-        # 输出分类
-        # self.f_net_print = nn.Sequential(
-        #     DownConvNormAct(1, 16),  # 32*32*16
-        #     ConvNormAct(16, 8, 3),  # 32*32*8
-        #     ConvNormAct(8, 4, 3),  # 32*32*4
-        #     Reshape(32 * 32 * 4),
-        #     L2Normalize(1),
-        #     nn.Linear(32 * 32 * 4, 2),
-        # )
-        # self.f_net_screen = nn.Sequential(
-        #     DownConvNormAct(1, 16),  # 32*32*16
-        #     ConvNormAct(16, 8, 3),  # 32*32*8
-        #     ConvNormAct(8, 4, 3),  # 32*32*4
-        #     Reshape(32 * 32 * 4),
-        #     L2Normalize(1),
-        #     nn.Linear(32 * 32 * 4, 2),
-        # )
+    def forward(self, x: torch.tensor):
+        assert x.dim() == 5, "input tensor must be 5D, but got {}D".format(x.dim())
+        assert x.shape[2]==6, "input tensor must have 6 frames, but got {}".format(x)
+        assert x.shape[1]==3, "input tensor must have 3 channels, but got {}".format(x)
+
+        atten_x = self.attention_stem(x) # convert from (N, C, H, W) to (N, 32, 64, 64)
+        attention_x = self.easyunet(atten_x)
+
+        attention_soft_max = AttentionGatingNetwork.pixel_wise_softmax(attention_x)
+        
+        depth_map_cof = torch.from_numpy(self.depth_map_cor)
+
+        dot = depth_map_cof * attention_soft_max
+        summation = torch.sum(dot, dim=-1)
+        attention_map = torch.unsqueeze(summation, dim=1)
+        attention_map = torch.softmax(torch.reshape(attention_map, [attention_map.shape[0],6, 64, 64]), dim=1)
+        return attention_map
+
+# classification head
+class ClassificationHead(nn.Module):
+    def __init__(self, return_proba = False):
+        super(ClassificationHead, self).__init__()
+        self.return_proba = return_proba
         self.f_net = nn.Sequential(
             DownConvNormAct(1, 16),  # 32*32*16
             ConvNormAct(16, 8, 3),  # 32*32*8
@@ -72,103 +138,54 @@ class ATR-FAS(nn.Module):
             L2Normalize(1),
             nn.Linear(32 * 32 * 4, 2),
         )
+    
+    def forward(self, x: torch.tensor):
+        assert x.dim() == 3, "input tensor must be 3D, but got {}D".format(x.dim())
 
-        # 输出颜色序列分类
-        self.r_net = nn.Sequential(
-            DownConvNormAct(64, 64, kernel_size=7),  # [32, 32, 64]
+        x_final = x.unsqueeze(1).unsqueeze(2)
+        pred_logits = self.f_net(x_final)
+        if self.return_proba:
+            return torch.softmax(pred_logits, dim=-1)
+        return pred_logits
+    
+class ATRFAS(nn.Module):
+    def __init__(self, num_batches: int, num_frames: int=6, return_proba: bool=True, infer_type: str='inference'):
+        super(ATRFAS, self).__init__()
+        self.type_gating_network = TyepGatingNetwork()
+        self.memm = MEMM(num_batches, num_frames)
+        self.attention_gating_network = AttentionGatingNetwork()
+        self.classification_head = ClassificationHead(return_proba)
 
-            # 如果有AdaptiveAvgPool2d算子，就用此语句
-            torch.nn.AdaptiveAvgPool2d((1, 1)),  # [1, 1, 64]
-            Reshape(64),
+        self.infer_type = infer_type
+    
+    def forward(self, x: torch.tensor):
+        assert x.dim() == 5, "input tensor must be 5D, but got {}D".format(x.dim())
 
-            # 如果没有AdaptiveAvgPool2d算子，就用此语句
-            # Reshape(32*32, 64),
-            # Mean(1),
+        x = x.permute(0, 2, 1, 3, 4) # [B, N, C, H, W] -> [B, C, N, H, W]
 
-            nn.Linear(64, 32),
-            nn.Linear(32, 3),
-        )
-
-    def to(self, device):
-        # self.pos_embedding = self.pos_embedding.to(device)
-        self.depth_map_cof = self.depth_map_cof.to(device)
-        return super(MoEA, self).to(device)
-
-    def forward(self, x):
-        gate = self.gate(x)
-        gate_soft_max = torch.softmax(gate, dim=1)
-        atten_x = self.attention_stem(x)
-        depth_map_attention = self.infer_depth_map_attention(atten_x)
-        if self.infer_type == "attention":
-            return depth_map_attention.permute(1, 2, 3, 0)
-
-        x = self.head_stem(x) + self.pos_embedding
-
-        # 做深度图---------------------------------------------------------------------
-        single_depth_map, depth_soft_max, depth_map = self.infer_depth_map([self.u_net_print, self.u_net_screen, self.u_net_3d], x, depth_map_attention, gate_soft_max)
-
-        if self.infer_type == "depth":
-            return depth_map.permute(0, 2, 3, 1)
-        elif self.infer_type == "sdepth":
-            return single_depth_map.permute(0, 2, 3, 1)
-
-        # 做分类-----------------------------------------------------------------------
-        single_p = torch.reshape(self.f_net(single_depth_map), [-1, 2])
-        single_pred = torch.softmax(single_p, dim=1)[:, 1]
-
-        # 做闪光颜色回归-----------------------------------------------------------------
-        sc = torch.reshape(self.r_net(x), [-1, 3])
-        sc_p = torch.cat((sc[:, 0:1] - sc[:, 1:2], sc[:, 1:2] - sc[:, 2:3], sc[:, 2:3] - sc[:, 0:1]), 1)
-
-        if self.infer_type == "score":
-            return torch.sigmoid(sc_p), single_pred
-        else:
-            return sc_p, torch.log(depth_soft_max + 1e-5), single_p, single_pred, depth_map_attention, gate
-
-    def infer_depth_map_attention(self, x):
-        attention_x = self.easy_u_net_attention(x)
-        attention_soft_max = self.pixel_wise_softmax(attention_x)
-        attention_map = torch.unsqueeze(torch.sum(self.depth_map_cof * attention_soft_max, dim=-1), dim=1)
-        attention_map = torch.softmax(torch.reshape(attention_map, [-1, self.frame_num, 64, 64]), dim=1)
-        return attention_map
-
-    def infer_depth_map(self, u_net, x, depth_map_attention, gate_soft_max):
-        gate_soft_max = torch.reshape(gate_soft_max, [-1, 3, 1, 1])
-        depth_x = u_net[0](x) * gate_soft_max[:, 0:1, :, :] + u_net[1](x) * gate_soft_max[:, 1:2, :, :] + u_net[2](x) * gate_soft_max[:, 2:3, :, :]
-        depth_soft_max = self.pixel_wise_softmax(depth_x)
-        depth_map = torch.unsqueeze(torch.sum(self.depth_map_cof * depth_soft_max, dim=-1), dim=1)
-
-        # 融合多帧深度图成单帧
-        single_depth_map = torch.sum(
-            torch.reshape(depth_map, [-1, self.frame_num, 64, 64]) * depth_map_attention, dim=1,
-            keepdim=True)
-        return single_depth_map, depth_soft_max, depth_map
-
+        type_gating = self.type_gating_network(x)
+        frame_depth_map = self.memm(x, type_gating)
+        frame_attention_map = self.attention_gating_network(x)
+        depth_map = (frame_depth_map * frame_attention_map).sum(dim=1)
+        pred = self.classification_head(depth_map)
+        if self.infer_type == 'inference':
+            return pred
+        return pred, type_gating, frame_depth_map, frame_attention_map, depth_map
+    
     def load_state_dict(self, state_dict, strict=False):
         own_state = self.state_dict()
+        
         for name, param in state_dict.items():
             if name in own_state:
-                print("copy value to %s" % name)
-                if isinstance(param, nn.Parameter):
-                    param = param.data
+                print(f"Copying value to {name}")
+                param_data = param.data if isinstance(param, nn.Parameter) else param
                 try:
-                    own_state[name].copy_(param)
+                    own_state[name].copy_(param_data)
                 except Exception:
-                    if name.find('tail') == -1:
-                        raise RuntimeError('While copying the parameter named {}, '
-                                           'whose dimensions in the model are {} and '
-                                           'whose dimensions in the checkpoint are {}.'
-                                           .format(name, own_state[name].size(), param.size()))
-            elif strict:
-                if name.find('tail') == -1:
-                    raise KeyError('unexpected key "{}" in state_dict'
-                                   .format(name))
-
-    @classmethod
-    def pixel_wise_softmax(cls, x):
-        # 将像素交换到最后的维度
-        x = x.permute(0, 2, 3, 1)
-        channel_max, _ = torch.max(x, dim=3, keepdim=True)
-        exponential_map = torch.exp(x - channel_max)
-        normalize = torch.sum(exponential_map, dim=3, keepdims=True)
-        return exponential_map / (normalize + 1e-5)
+                    if 'tail' not in name:
+                        raise RuntimeError(
+                            f"Error copying parameter '{name}'. Model dimensions: {own_state[name].size()}, "
+                            f"Checkpoint dimensions: {param_data.size()}"
+                        )
+            elif strict and 'tail' not in name:
+                raise KeyError(f"Unexpected key '{name}' in state_dict")

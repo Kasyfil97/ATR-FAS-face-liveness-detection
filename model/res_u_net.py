@@ -1,11 +1,15 @@
 from __future__ import print_function, division
 import torch.utils.data
 import torch
+import torch.nn as nn
 from .inverted_residual import InvertedResidual
-from .base_layer import *
+from .base_layer import Conv3X3BnReLU, Conv1X1BnReLU
 
 
 class ResUNet(nn.Module):
+    '''
+    convert input [64, 64, 64] to [32, 32, 32]
+    '''
     def __init__(self, res_block=InvertedResidual):
         super(ResUNet, self).__init__()
         # 输入适配器[64, 64, 64]->[128, 64, 64]
@@ -13,38 +17,41 @@ class ResUNet(nn.Module):
         # 编码器-------------------------------------------------------------
         self.encoder_0 = res_block(128, 64, 1)
 
-        self.max_pool_1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.max_pool_1 = nn.MaxPool3d(kernel_size=(1,2,2), stride=(1,2,2))
         self.encoder_1 = res_block(64, 128, 2)
 
-        self.max_pool_2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.max_pool_2 = nn.MaxPool3d(kernel_size=(1,2,2), stride=(1,2,2))
         self.encoder_2 = res_block(128, 256, 2)
 
-        self.max_pool_3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.max_pool_3 = nn.MaxPool3d(kernel_size=(1,2,2), stride=(1,2,2))
         self.encoder_3 = res_block(256, 512, 2)
 
-        self.max_pool_4 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.max_pool_4 = nn.MaxPool3d(kernel_size=(1,2,2), stride=(1,2,2))
         self.encoder_4 = res_block(512, 1024, 2)
 
         # 解码器---------------------------------------------------------
-        self.up_sample_4 = nn.Upsample(scale_factor=2)
+        self.up_sample_4 = nn.Upsample(scale_factor=(1,2,2))
         # 不希望解码器有这么高的精度，所以先用适配器降维
         self.adapt_4 = Conv1X1BnReLU(1024, 512)
         self.decoder_4 = res_block(2 * 512, 256, 1)
 
-        self.up_sample_3 = nn.Upsample(scale_factor=2)
+        self.up_sample_3 = nn.Upsample(scale_factor=(1,2,2))
         self.decoder_3 = res_block(2 * 256, 128, 1)
 
-        self.up_sample_2 = nn.Upsample(scale_factor=2)
+        self.up_sample_2 = nn.Upsample(scale_factor=(1,2,2))
         self.decoder_2 = res_block(2 * 128, 64, 1)
 
-        self.up_sample_1 = nn.Upsample(scale_factor=2)
+        self.up_sample_1 = nn.Upsample(scale_factor=(1,2,2))
         self.decoder_1 = res_block(2 * 64, 64, 1)
 
         # 输出适配器
-        self.last_u_conv = Conv3X3BnReLU(64, 256)
+        self.last_u_conv = Conv3X3BnReLU(64, 1)
 
     def forward(self, x):
-        x = self.pre_u_conv(x)
+        '''
+        convert input from [64, 64, 64] to [32, 32, 32]
+        '''
+        x = self.pre_u_conv(x) # 
 
         e0 = self.encoder_0(x)
 
@@ -77,4 +84,7 @@ class ResUNet(nn.Module):
         d1 = torch.cat((e0, d1), dim=1)
         d1 = self.decoder_1(d1)
 
-        return self.last_u_conv(d1)
+        d1 = self.last_u_conv(d1)
+        d1 = d1.squeeze(1)
+
+        return d1
