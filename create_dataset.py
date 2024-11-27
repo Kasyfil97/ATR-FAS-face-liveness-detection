@@ -65,14 +65,14 @@ class DatasetCreator:
         for label_folder in input_dir.iterdir():
             if not label_folder.is_dir():
                 continue
-            is_real = label_folder.name =='real'
+            is_real = label_folder.name
             
             for image_folder in label_folder.iterdir():
                 if not image_folder.is_dir():
                     continue
                 image_paths = list(image_folder.glob('*.jpg')) + list(image_folder.glob('*.png'))
 
-                self.process_batch(image_paths, output_dir / label_folder.name, is_real)
+                self.process_batch(image_paths, output_dir / image_folder.name, is_real)
 
 
 
