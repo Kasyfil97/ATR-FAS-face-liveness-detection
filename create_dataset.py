@@ -1,4 +1,5 @@
 import cv2
+import argparse
 import torch
 import gc
 import numpy as np
@@ -76,8 +77,10 @@ class DatasetCreator:
 
 
 if __name__ == "__main__":
-    input_dir = "sample_images"
-    output_dir = "input_data"
+    arg = argparse.ArgumentParser()
+    arg.add_argument("--input_dir", type=str, required=True, help = 'path to input directory')
+    arg.add_argument("--output_dir", type=str, required=True, help = 'path to output directory')
+    args = arg.parse_args()
 
-    DatasetCreator().process_dataset(Path(input_dir), Path(output_dir))
+    DatasetCreator().process_dataset(Path(args.input_dir), Path(args.output_dir))
 
