@@ -14,21 +14,6 @@ To create dataset, you should create raw dataset folder where it consist of two 
 ```
 raw_dataset/
 ├── fake/
-│   ├── video1.mp4
-│   ├── video2.mp4
-│   └── ...
-└── real/
-    ├── video1.mp4
-    ├── video2.mp4
-    └── ...
-
-```
-
-After organizing your raw dataset, you need to create a training dataset by extracting frames from the videos. You can use the provided script `create_dataset.py` to do this. The script will create a new folder structure as follows:
-
-```
-raw_dataset/
-├── fake/
 │   ├── video1/
 │   │   ├── frame1.jpg
 │   │   ├── frame2.jpg
@@ -50,9 +35,24 @@ raw_dataset/
     └── ...
 ```
 
+After organizing your raw dataset, you need to create a training dataset for input and label for training.. You can use the provided script `create_dataset.py` to do this. The script will create a new folder structure as follows:
+
+```
+train_dataset/
+├── video1/
+│   ├── frame1.jpg
+│   ├── frame2.jpg
+│   └── ...
+├── video2/
+│   ├── frame1.jpg
+│   ├── frame2.jpg
+│   └── ...
+└── ...
+```
+
 To run the script, use the following command:
 
 ```bash
-python extract_frames.py --input_folder raw_dataset --output_folder train_dataset
+python create_dataset.py --input_folder raw_dataset --output_folder train_dataset
 ```
 The code is a work in progress.
