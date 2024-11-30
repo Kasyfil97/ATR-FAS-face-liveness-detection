@@ -55,4 +55,10 @@ To run the script, use the following command:
 ```bash
 python create_dataset.py --input_folder raw_dataset --output_folder train_dataset
 ```
+
+## How to Train
+The first, please make csv file for train data. It contains the folder input image path, folder depth image path, and the label. In this dummy data, we use images in `input_data` folder. After that, you could change the parameters and training variables in  `train.py`. Then you could run
+```bash
+python train.py
+```
 The code is a work in progress.
