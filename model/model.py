@@ -23,7 +23,7 @@ class TyepGatingNetwork(nn.Module):
         assert x.shape[2]==6, "input tensor must have 6 frames, but got {}".format(x)
         assert x.shape[1]==3, "input tensor must have 3 channels, but got {}".format(x) 
 
-        x = self.gate(x)
+        x = self.gate(x) # [B, C, N, H, W] -> [B, M]
         x = torch.softmax(x, dim=-1)
         return x
     
@@ -62,16 +62,17 @@ class MEMM(nn.Module):
         assert x.shape[1]==3, "input tensor must have 3 channels, but got {}".format(x)
 
         # input embedding
-        x = self.head_stem(x) # [B, 3, N, 256, 256] -> [B, 64, N, 64, 64]
+        x = self.head_stem(x) # [B, C, N, H, W] -> [B, 64, N, 64, 64]
         x = x + self.positional_embedding
         # number of types
         M = type_gating.shape[1]
 
         # result from 
-        x_bar = [self.resunet(x) for _ in range(M)]
-        type_gating = torch.reshape(type_gating, [-1, 3, 1, 1, 1]) # [B, M] -> [M, B, 1, 1, 1]
+        x_bar = [self.resunet(x) for _ in range(M)] 
+        type_gating = torch.reshape(type_gating, [-1, 3, 1, 1]) # [B, M] -> [M, B, 1, 1, 1]
         
-        x_prime = sum(x_bar[i] * type_gating[:, i:i+1, :, :, :] for i in range(M))
+        x_prime = sum(x_bar[i] * type_gating[:, i:i+1, :, :] for i in range(M))
+        x_prime = x_prime.unsqueeze(1)
         depth_softmax = MEMM.pixel_wise_softmax(x_prime)
 
         depth_map_cof = torch.from_numpy(self.depth_map_cor)
@@ -113,7 +114,7 @@ class AttentionGatingNetwork(nn.Module):
         assert x.shape[1]==3, "input tensor must have 3 channels, but got {}".format(x)
 
         atten_x = self.attention_stem(x) # convert from (N, C, H, W) to (N, 32, 64, 64)
-        attention_x = self.easyunet(atten_x)
+        attention_x = self.easyunet(atten_x) # convert from (N, 32)
 
         attention_soft_max = AttentionGatingNetwork.pixel_wise_softmax(attention_x)
         
@@ -160,6 +161,7 @@ class ATRFAS(nn.Module):
     
     def forward(self, x: torch.tensor):
         assert x.dim() == 5, "input tensor must be 5D, but got {}D".format(x.dim())
+        assert x.shape[2]==3, "input tensor must have 6 frames, but got {}".format(x)
 
         x = x.permute(0, 2, 1, 3, 4) # [B, N, C, H, W] -> [B, C, N, H, W]
 
