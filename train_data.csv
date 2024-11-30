@@ -1,0 +1,3 @@
+input_path,depth_path,label
+input data/image 1/input,input data/image 1/label,0
+input data/image 2/input,input data/image 3/label,1
