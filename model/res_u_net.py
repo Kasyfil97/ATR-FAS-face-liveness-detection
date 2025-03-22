@@ -45,7 +45,7 @@ class ResUNet(nn.Module):
         self.decoder_1 = res_block(2 * 64, 64, 1)
 
         # 输出适配器
-        self.last_u_conv = Conv3X3BnReLU(64, 1)
+        self.last_u_conv = Conv3X3BnReLU(64, 256)
 
     def forward(self, x):
         '''
