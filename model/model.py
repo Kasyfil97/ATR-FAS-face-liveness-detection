@@ -29,14 +29,16 @@ class TyepGatingNetwork(nn.Module):
     
 # MEMM
 class MEMM(nn.Module):
-    def __init__(self, num_batches: int, num_frames: int=6):
+    def __init__(self,  num_frames: int=6):
         super(MEMM, self).__init__()
         self.head_stem = nn.Sequential(
             DownConvNormAct(3, 32), # [6, 32, 128, 128]
             DownConvNormAct(32, 64), # [6, 64, 64, 64]
         )
-        self.positional_embedding = torch.nn.Parameter(torch.randn(num_batches, 64, num_frames, 64, 64)) # [B, 64, N, 64, 64]
-        self.depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, 1, -1]).astype(np.float32)
+        self.positional_embedding = torch.nn.Parameter(torch.randn(1, 64, num_frames, 64, 64)) # [B, 64, N, 64, 64]
+        depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, 1, -1]).astype(np.float32)
+        self.register_buffer('depth_map_cor', torch.from_numpy(depth_map_cor))
+
         self.resunet = ResUNet()
 
     @staticmethod
@@ -69,14 +71,12 @@ class MEMM(nn.Module):
 
         # result from 
         x_bar = [self.resunet(x) for _ in range(M)] 
-        type_gating = torch.reshape(type_gating, [-1, 3, 1, 1]) # [B, M] -> [M, B, 1, 1, 1]
+        type_gating = torch.reshape(type_gating, [-1, 3, 1, 1, 1]) # [B, M] -> [M, B, 1, 1, 1]
         
-        x_prime = sum(x_bar[i] * type_gating[:, i:i+1, :, :] for i in range(M))
-        x_prime = x_prime.unsqueeze(1)
+        x_prime = sum(x_bar[i] * type_gating[:, i:i+1, :, :, :] for i in range(M))
         depth_softmax = MEMM.pixel_wise_softmax(x_prime)
 
-        depth_map_cof = torch.from_numpy(self.depth_map_cor)
-        depth_map = torch.sum(depth_softmax * depth_map_cof, axis=-1)
+        depth_map = torch.sum(depth_softmax * self.depth_map_cor, axis=-1)
         
         return depth_map
     
@@ -89,7 +89,9 @@ class AttentionGatingNetwork(nn.Module):
             DownConvNormAct(16, 32),
         )
         self.easyunet = EasyResUNet()
-        self.depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, 1, -1]).astype(np.float32)
+        depth_map_cor = np.reshape(np.arange(256) / 255., [1, 1, 1, 1, -1]).astype(np.float32)
+        self.register_buffer('depth_map_cor', torch.from_numpy(depth_map_cor))
+
 
     @staticmethod
     def pixel_wise_softmax(x):
@@ -117,10 +119,8 @@ class AttentionGatingNetwork(nn.Module):
         attention_x = self.easyunet(atten_x) # convert from (N, 32)
 
         attention_soft_max = AttentionGatingNetwork.pixel_wise_softmax(attention_x)
-        
-        depth_map_cof = torch.from_numpy(self.depth_map_cor)
 
-        dot = depth_map_cof * attention_soft_max
+        dot = self.depth_map_cor * attention_soft_max
         summation = torch.sum(dot, dim=-1)
         attention_map = torch.unsqueeze(summation, dim=1)
         attention_map = torch.softmax(torch.reshape(attention_map, [attention_map.shape[0],6, 64, 64]), dim=1)
@@ -128,7 +128,7 @@ class AttentionGatingNetwork(nn.Module):
 
 # classification head
 class ClassificationHead(nn.Module):
-    def __init__(self, return_proba = False):
+    def __init__(self, return_proba = False, num_class=2):
         super(ClassificationHead, self).__init__()
         self.return_proba = return_proba
         self.f_net = nn.Sequential(
@@ -137,7 +137,7 @@ class ClassificationHead(nn.Module):
             ConvNormAct(8, 4, 3),  # 32*32*4
             Reshape(32 * 32 * 4),
             L2Normalize(1),
-            nn.Linear(32 * 32 * 4, 2),
+            nn.Linear(32 * 32 * 4, num_class)
         )
     
     def forward(self, x: torch.tensor):
@@ -150,12 +150,12 @@ class ClassificationHead(nn.Module):
         return pred_logits
     
 class ATRFAS(nn.Module):
-    def __init__(self, num_batches: int, num_frames: int=6, return_proba: bool=True, infer_type: str='inference'):
+    def __init__(self, num_class = 2, num_frames: int=6, return_proba: bool=False, infer_type: str='inference'):
         super(ATRFAS, self).__init__()
         self.type_gating_network = TyepGatingNetwork()
-        self.memm = MEMM(num_batches, num_frames)
+        self.memm = MEMM(num_frames)
         self.attention_gating_network = AttentionGatingNetwork()
-        self.classification_head = ClassificationHead(return_proba)
+        self.classification_head = ClassificationHead(return_proba, num_class)
 
         self.infer_type = infer_type
     
@@ -173,21 +173,3 @@ class ATRFAS(nn.Module):
         if self.infer_type == 'inference':
             return pred
         return pred, type_gating, frame_depth_map, frame_attention_map, depth_map
-    
-    def load_state_dict(self, state_dict, strict=False):
-        own_state = self.state_dict()
-        
-        for name, param in state_dict.items():
-            if name in own_state:
-                print(f"Copying value to {name}")
-                param_data = param.data if isinstance(param, nn.Parameter) else param
-                try:
-                    own_state[name].copy_(param_data)
-                except Exception:
-                    if 'tail' not in name:
-                        raise RuntimeError(
-                            f"Error copying parameter '{name}'. Model dimensions: {own_state[name].size()}, "
-                            f"Checkpoint dimensions: {param_data.size()}"
-                        )
-            elif strict and 'tail' not in name:
-                raise KeyError(f"Unexpected key '{name}' in state_dict")
