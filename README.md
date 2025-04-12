@@ -61,4 +61,3 @@ The first, please make csv file for train data. It contains the folder input ima
 ```bash
 python train.py
 ```
-The code is a work in progress.
